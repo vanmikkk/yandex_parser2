@@ -19,13 +19,3 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/organization/reviews', [OrganizationController::class, 'reviews']);
     Route::post('/organization/refresh', [OrganizationController::class, 'refresh']);
 });
-
-
-Route::get('/debug-auth', function (Request $request) {
-    return response()->json([
-        'auth_check' => auth()->check(),
-        'user' => $request->user(),
-        'session_id' => $request->session()->getId(),
-        'session_data' => $request->session()->all(),
-    ]);
-})->middleware('auth:sanctum');

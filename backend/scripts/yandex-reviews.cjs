@@ -33,7 +33,7 @@ if (!url || !outputFile) {
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: false,
+        headless: true,
         // поемнять на true
 
         defaultViewport: {
