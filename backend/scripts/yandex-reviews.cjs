@@ -34,16 +34,33 @@ if (!url || !outputFile) {
 (async () => {
     const browser = await puppeteer.launch({
         headless: true,
-        // поемнять на true
 
         defaultViewport: {
             width: 1280,
             height: 900,
+            deviceScaleFactor: 1,
         },
+
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--window-size=1280,900',
+        ],
     });
 
     try {
         const page = await browser.newPage();
+
+        await page.setUserAgent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+            'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+            'Chrome/131.0.0.0 Safari/537.36'
+        );
+
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        });
 
         const reviews = new Map();
 
@@ -303,17 +320,40 @@ if (!url || !outputFile) {
             'Page loaded.'
         );
 
+        // DEBUG: save the actual page received in headless mode.
+        await page.screenshot({
+            path: './storage/app/yandex/headless-debug.png',
+            fullPage: false,
+        });
+
+        const debugHtml = await page.content();
+
+        fs.writeFileSync(
+            './storage/app/yandex/headless-debug.html',
+            debugHtml,
+            'utf8'
+        );
+
+        console.error(
+            'Headless debug files saved.'
+        );
+
+
         await new Promise(
             resolve => setTimeout(resolve, 5000)
         );
 
+        await page.waitForSelector(
+            '.business-reviews-card-view__title',
+            {
+                visible: true,
+                timeout: 30000,
+            }
+        );
+
         const reviewsPageReady =
             await page.evaluate(() => {
-                const reviewCards = document.querySelectorAll(
-                    '.business-reviews-card-view__review'
-                );
-
-                const reviewsTitle =
+                const title =
                     document.querySelector(
                         '.business-reviews-card-view__title'
                     );
@@ -323,9 +363,9 @@ if (!url || !outputFile) {
                         '.business-reviews-card-view__reviews-container'
                     );
 
-                return (
-                    reviewCards.length > 0 ||
-                    Boolean(reviewsTitle && reviewsContainer)
+                return Boolean(
+                    title &&
+                    reviewsContainer
                 );
             });
 
@@ -333,6 +373,44 @@ if (!url || !outputFile) {
             throw new Error(
                 'Не удалось обнаружить блок отзывов Яндекс Карт. ' +
                 'Возможно, изменилась структура страницы или открыта не вкладка «Отзывы».'
+            );
+        }
+
+        try {
+            await page.waitForFunction(
+                () => {
+                    const reviewCards =
+                        document.querySelectorAll(
+                            '.business-reviews-card-view__review'
+                        );
+
+                    const reviewsTitle =
+                        document.querySelector(
+                            '.business-reviews-card-view__title'
+                        );
+
+                    const reviewsContainer =
+                        document.querySelector(
+                            '.business-reviews-card-view__reviews-container'
+                        );
+
+                    return (
+                        reviewCards.length > 0 ||
+                        Boolean(
+                            reviewsTitle &&
+                            reviewsContainer
+                        )
+                    );
+                },
+                {
+                    timeout: 30000,
+                }
+            );
+        } catch (error) {
+            throw new Error(
+                'Не удалось обнаружить блок отзывов Яндекс Карт. ' +
+                'Возможно, изменилась структура страницы, ' +
+                'страница не успела загрузиться или открыта не вкладка «Отзывы».'
             );
         }
 
