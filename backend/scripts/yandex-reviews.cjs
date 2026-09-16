@@ -4,6 +4,22 @@ const crypto = require('crypto');
 
 const MAX_AVAILABLE_REVIEWS = 600;
 
+const emitProgress = (collected, target = MAX_AVAILABLE_REVIEWS) => {
+    const safeTarget = Math.max(
+        1,
+        Math.min(target, MAX_AVAILABLE_REVIEWS)
+    );
+
+    const safeCollected = Math.min(
+        collected,
+        safeTarget
+    );
+
+    console.error(
+        `PROGRESS: ${safeCollected}/${safeTarget}`
+    );
+};
+
 const url = process.argv[2];
 const outputFile = process.argv[3];
 
@@ -32,6 +48,13 @@ if (!url || !outputFile) {
 
         let totalReviews = null;
         let lastPage = 0;
+
+        let apiReviewsReceived = false;
+
+        // Информация о страницах отзывов от Yandex
+        let totalPages = null;
+        let reviewsRemained = null;
+        let reachedLastPage = false;
 
         const createDomReviewId = (review) => {
             return crypto
@@ -62,7 +85,10 @@ if (!url || !outputFile) {
                     newReviews++;
                 }
 
-                reviews.set(review.reviewId, review);
+                reviews.set(
+                    review.reviewId,
+                    review
+                );
             }
 
             return {
@@ -71,12 +97,6 @@ if (!url || !outputFile) {
             };
         };
 
-        /*
-         * Получаем первые 50 отзывов непосредственно из DOM.
-         *
-         * При первоначальной загрузке Yandex уже показывает
-         * первые 50 отзывов, но fetchReviews?page=1 мы не получаем.
-         */
         const collectInitialDomReviews = async () => {
             const domReviews = await page.evaluate(() => {
                 return [
@@ -113,10 +133,14 @@ if (!url || !outputFile) {
                         );
 
                     const ratingText =
-                        ratingElement?.getAttribute('aria-label') ?? '';
+                        ratingElement?.getAttribute(
+                            'aria-label'
+                        ) ?? '';
 
                     const ratingMatch =
-                        ratingText.match(/(\d+(?:[.,]\d+)?)/);
+                        ratingText.match(
+                            /(\d+(?:[.,]\d+)?)/
+                        );
 
                     const rating = ratingMatch
                         ? Number(
@@ -136,11 +160,15 @@ if (!url || !outputFile) {
             return domReviews;
         };
 
-        /*
-         * Логируем реальные fetchReviews requests.
-         */
+
         page.on('request', (request) => {
-            if (!request.url().includes('/maps/api/business/fetchReviews')) {
+            if (
+                !request
+                    .url()
+                    .includes(
+                        '/maps/api/business/fetchReviews'
+                    )
+            ) {
                 return;
             }
 
@@ -150,12 +178,14 @@ if (!url || !outputFile) {
             );
         });
 
-        /*
-         * Получаем последующие страницы отзывов через
-         * внутренний API, который использует сам браузер Yandex.
-         */
         page.on('response', async (response) => {
-            if (!response.url().includes('/maps/api/business/fetchReviews')) {
+            if (
+                !response
+                    .url()
+                    .includes(
+                        '/maps/api/business/fetchReviews'
+                    )
+            ) {
                 return;
             }
 
@@ -175,14 +205,52 @@ if (!url || !outputFile) {
                 const pageReviews =
                     json?.data?.reviews ?? [];
 
+                if (pageReviews.length > 0) {
+                    apiReviewsReceived = true;
+                }
+
                 const params =
                     json?.data?.params ?? {};
 
                 totalReviews =
                     params.count ?? totalReviews;
 
-                const currentPage =
-                    params.page ?? 0;
+                const currentPage = Number(
+                    params.page ?? 0
+                );
+
+                if (
+                    params.totalPages !== undefined &&
+                    params.totalPages !== null
+                ) {
+                    totalPages = Number(
+                        params.totalPages
+                    );
+                }
+
+                if (
+                    params.reviewsRemained !== undefined &&
+                    params.reviewsRemained !== null
+                ) {
+                    reviewsRemained = Number(
+                        params.reviewsRemained
+                    );
+                }
+
+                if (
+                    totalPages !== null &&
+                    totalPages > 0 &&
+                    currentPage >= totalPages
+                ) {
+                    reachedLastPage = true;
+                }
+
+                if (
+                    reviewsRemained !== null &&
+                    reviewsRemained === 0
+                ) {
+                    reachedLastPage = true;
+                }
 
                 const {
                     newReviews,
@@ -193,12 +261,25 @@ if (!url || !outputFile) {
                     lastPage = currentPage;
                 }
 
+                const targetReviews = Math.min(
+                    totalReviews ??
+                        MAX_AVAILABLE_REVIEWS,
+                    MAX_AVAILABLE_REVIEWS
+                );
+
                 console.error(
                     `page=${currentPage}, ` +
                     `received=${pageReviews.length}, ` +
                     `new=${newReviews}, ` +
                     `duplicates=${duplicateReviews}, ` +
-                    `collected=${reviews.size}/${totalReviews ?? '?'}`
+                    `collected=${reviews.size}/${totalReviews ?? '?'}, ` +
+                    `totalPages=${totalPages ?? '?'}, ` +
+                    `reviewsRemained=${reviewsRemained ?? '?'}`
+                );
+
+                emitProgress(
+                    reviews.size,
+                    targetReviews
                 );
             } catch (error) {
                 console.error(
@@ -208,69 +289,205 @@ if (!url || !outputFile) {
             }
         });
 
-        console.error('Opening Yandex Maps...');
+        console.error(
+            'Opening Yandex Maps...'
+        );
 
         await page.goto(url, {
             waitUntil: 'domcontentloaded',
             timeout: 60000,
         });
 
-        console.error('Page loaded.');
+        console.error(
+            'Page loaded.'
+        );
 
-        /*
-         * Даём Yandex полностью отрисовать первые отзывы.
-         */
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(
+            resolve => setTimeout(resolve, 5000)
+        );
 
-        /*
-         * Забираем первые 50 отзывов из DOM.
-         */
+        const reviewsPageReady =
+            await page.evaluate(() => {
+                return Boolean(
+                    document.querySelector(
+                        '.business-reviews-card-view__review'
+                    ) ||
+                    document.querySelector(
+                        '.business-reviews-card-view__title'
+                    )
+                );
+            });
+
+        if (!reviewsPageReady) {
+            throw new Error(
+                'Страница отзывов Яндекс Карт не открыта или блок отзывов не найден.'
+            );
+        }
+
+        const organizationInfo =
+            await page.evaluate(() => {
+                const name =
+                    document
+                        .querySelector('h1')
+                        ?.innerText
+                        ?.trim() ?? null;
+
+                const summary =
+                    document
+                        .querySelector(
+                            '.card-reviews-view__summary'
+                        )
+                        ?.innerText
+                        ?.trim() ?? '';
+
+                const ratingMatch =
+                    summary.match(
+                        /Рейтинг\s*[\r\n]+([\d.,]+)/
+                    );
+
+                const ratingsCountMatch =
+                    summary.match(
+                        /([\d\s]+)\s+оценок/
+                    );
+
+                const reviewsHeader =
+                    document
+                        .querySelector(
+                            '.business-reviews-card-view__title'
+                        )
+                        ?.innerText
+                        ?.trim() ?? '';
+
+                const reviewsCountMatch =
+                    reviewsHeader.match(
+                        /([\d\s]+)\s+отзыв/
+                    );
+
+                return {
+                    name,
+
+                    rating: ratingMatch
+                        ? Number(
+                            ratingMatch[1]
+                                .replace(',', '.')
+                        )
+                        : null,
+
+                    ratingsCount:
+                        ratingsCountMatch
+                            ? Number(
+                                ratingsCountMatch[1]
+                                    .replace(/\s/g, '')
+                            )
+                            : 0,
+
+                    reviewsCount:
+                        reviewsCountMatch
+                            ? Number(
+                                reviewsCountMatch[1]
+                                    .replace(/\s/g, '')
+                            )
+                            : 0,
+                };
+            });
+
+        console.error(
+            'Organization info:',
+            JSON.stringify(
+                organizationInfo,
+                null,
+                2
+            )
+        );
+
+        if (
+            totalReviews === null &&
+            organizationInfo.reviewsCount > 0
+        ) {
+            totalReviews =
+                organizationInfo.reviewsCount;
+        }
+
+        const targetReviews = Math.min(
+            totalReviews ??
+                organizationInfo.reviewsCount ??
+                MAX_AVAILABLE_REVIEWS,
+            MAX_AVAILABLE_REVIEWS
+        );
+
+        console.error(
+            `Target reviews: ${targetReviews}`
+        );
+
         const initialDomReviews =
             await collectInitialDomReviews();
 
         console.error(
             'First DOM review:',
-            JSON.stringify(initialDomReviews[0], null, 2)
+            JSON.stringify(
+                initialDomReviews[0],
+                null,
+                2
+            )
         );
 
         console.error(
             `Initial DOM reviews: ${initialDomReviews.length}`
         );
 
-        for (const review of initialDomReviews) {
-            const externalId =
-                createDomReviewId(review);
+        if (!apiReviewsReceived) {
+            for (const review of initialDomReviews) {
+                const externalId =
+                    createDomReviewId(review);
 
-            reviews.set(externalId, {
-                reviewId: externalId,
-                businessId: null,
-                author: {
-                    name: review.author,
-                },
-                rating: review.rating,
-                text: review.text,
-                updatedTime: review.publishedAt,
-            });
+                reviews.set(
+                    externalId,
+                    {
+                        reviewId: externalId,
+                        businessId: null,
+                        author: {
+                            name: review.author,
+                        },
+                        rating: review.rating,
+                        text: review.text,
+                        updatedTime:
+                            review.publishedAt,
+                    }
+                );
+            }
+
+            console.error(
+                `Initial DOM reviews added: ${initialDomReviews.length}`
+            );
+        } else {
+            console.error(
+                'Skipping DOM reviews because API reviews were already received.'
+            );
         }
 
         console.error(
-            `Initial reviews collected: ${reviews.size}/${MAX_AVAILABLE_REVIEWS}`
+            `Initial reviews collected: ${reviews.size}/${targetReviews}`
         );
 
-        /*
-         * Теперь прокручиваем конкретно контейнер отзывов.
-         */
-       let noProgressCount = 0;
-        let previousReviewsCount = reviews.size;
+        emitProgress(
+            reviews.size,
+            targetReviews
+        );
 
-        for (let i = 0; i < 1000; i++) {
-            const targetReviews = Math.min(
-                totalReviews ?? MAX_AVAILABLE_REVIEWS,
-                MAX_AVAILABLE_REVIEWS
-            );
+        let noProgressCount = 0;
+        let previousReviewsCount =
+            reviews.size;
 
-            if (reviews.size >= targetReviews) {
+        for (
+            let i = 0;
+            i < 1000;
+            i++
+        ) {
+            if (
+                reviews.size >= targetReviews
+            ) {
                 console.error('');
+
                 console.error(
                     `All available reviews collected: ${reviews.size}/${targetReviews}`
                 );
@@ -278,35 +495,54 @@ if (!url || !outputFile) {
                 break;
             }
 
-            const scrollResult = await page.evaluate(() => {
-                const container = document.querySelector(
-                    '.scroll__container'
+            if (reachedLastPage) {
+                console.error('');
+
+                console.error(
+                    `Reached last available page. ` +
+                    `Collected ${reviews.size}/${targetReviews}`
                 );
 
-                if (!container) {
+                break;
+            }
+
+            const scrollResult =
+                await page.evaluate(() => {
+                    const container =
+                        document.querySelector(
+                            '.scroll__container'
+                        );
+
+                    if (!container) {
+                        return {
+                            found: false,
+                            scrollTop: null,
+                            scrollHeight: null,
+                            clientHeight: null,
+                        };
+                    }
+
+                    container.scrollTop += 1200;
+
+                    container.dispatchEvent(
+                        new Event(
+                            'scroll',
+                            {
+                                bubbles: true,
+                            }
+                        )
+                    );
+
                     return {
-                        found: false,
-                        scrollTop: null,
-                        scrollHeight: null,
-                        clientHeight: null,
+                        found: true,
+                        scrollTop:
+                            container.scrollTop,
+                        scrollHeight:
+                            container.scrollHeight,
+                        clientHeight:
+                            container.clientHeight,
                     };
-                }
-
-                container.scrollTop += 1200;
-
-                container.dispatchEvent(
-                    new Event('scroll', {
-                        bubbles: true,
-                    })
-                );
-
-                return {
-                    found: true,
-                    scrollTop: container.scrollTop,
-                    scrollHeight: container.scrollHeight,
-                    clientHeight: container.clientHeight,
-                };
-            });
+                });
 
             if (!scrollResult.found) {
                 console.error(
@@ -317,25 +553,28 @@ if (!url || !outputFile) {
             }
 
             console.error(
-                `Scroll: top=${scrollResult.scrollTop}, ` +
+                `Scroll: ` +
+                `top=${scrollResult.scrollTop}, ` +
                 `height=${scrollResult.scrollHeight}, ` +
                 `client=${scrollResult.clientHeight}`
             );
 
-            /*
-            * Дополнительно используем настоящее колесо мыши.
-            */
-            const scrollContainer = await page.$(
-                '.scroll__container'
-            );
+
+            const scrollContainer =
+                await page.$(
+                    '.scroll__container'
+                );
 
             if (scrollContainer) {
-                const box = await scrollContainer.boundingBox();
+                const box =
+                    await scrollContainer.boundingBox();
 
                 if (box) {
                     await page.mouse.move(
-                        box.x + box.width / 2,
-                        box.y + box.height / 2
+                        box.x +
+                            box.width / 2,
+                        box.y +
+                            box.height / 2
                     );
 
                     await page.mouse.wheel({
@@ -344,80 +583,170 @@ if (!url || !outputFile) {
                 }
             }
 
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(
+                resolve => setTimeout(resolve, 3000)
+            );
 
             console.error(
                 `Progress: ${reviews.size}/${targetReviews}`
             );
 
-            if (reviews.size === previousReviewsCount) {
+            emitProgress(
+                reviews.size,
+                targetReviews
+            );
+
+            if (
+                reviews.size ===
+                previousReviewsCount
+            ) {
                 noProgressCount++;
             } else {
                 noProgressCount = 0;
-                previousReviewsCount = reviews.size;
+
+                previousReviewsCount =
+                    reviews.size;
             }
 
-            if (noProgressCount >= 30) {
+            if (
+                reviews.size >= targetReviews
+            ) {
                 console.error(
-                    'Stopping: no new reviews were received for 30 scrolls.'
+                    `Target reached: ${reviews.size}/${targetReviews}`
+                );
+
+                break;
+            }
+
+            if (reachedLastPage) {
+                console.error(
+                    `Reached last available page. ` +
+                    `Collected ${reviews.size}/${targetReviews}`
+                );
+
+                break;
+            }
+
+            if (
+                noProgressCount >= 30
+            ) {
+                console.error(
+                    `ERROR: No new reviews were received for 30 scrolls. ` +
+                    `Collected ${reviews.size}/${targetReviews}. ` +
+                    `Yandex reports ${Math.max(
+                        targetReviews -
+                            reviews.size,
+                        0
+                    )} reviews remaining.`
                 );
 
                 break;
             }
         }
 
-        /*
-         * Ограничиваем результат максимум 600 отзывами.
-         */
         const finalReviews = [
             ...reviews.values(),
-        ].slice(0, MAX_AVAILABLE_REVIEWS);
+        ].slice(
+            0,
+            MAX_AVAILABLE_REVIEWS
+        );
+
+        const collectionComplete =
+            finalReviews.length >=
+                targetReviews ||
+            reachedLastPage;
 
         const result = {
             businessId:
-                finalReviews[0]?.businessId ?? null,
+                finalReviews[0]?.businessId ??
+                null,
 
-            totalReviews,
+            name:
+                organizationInfo.name,
 
-            availableReviews: Math.min(
-                totalReviews ?? finalReviews.length,
-                MAX_AVAILABLE_REVIEWS
-            ),
+            rating:
+                organizationInfo.rating,
 
-            collectedReviews: finalReviews.length,
+            ratingsCount:
+                organizationInfo.ratingsCount,
+
+            totalReviews:
+                organizationInfo.reviewsCount ||
+                totalReviews,
+
+            availableReviews:
+                targetReviews,
+
+            collectedReviews:
+                finalReviews.length,
+
+            collectionComplete,
 
             lastPage,
 
-            reviews: finalReviews,
+            reviews:
+                finalReviews,
         };
 
         fs.writeFileSync(
             outputFile,
-            JSON.stringify(result, null, 2),
+            JSON.stringify(
+                result,
+                null,
+                2
+            ),
             'utf8'
         );
 
         console.error('');
-        console.error('========== RESULT ==========');
+
+        console.error(
+            '========== RESULT =========='
+        );
+
         console.error(
             `Unique reviews:    ${finalReviews.length}`
         );
+
         console.error(
-            `Total reviews:     ${totalReviews ?? 'unknown'}`
+            `Total reviews:     ${
+                totalReviews ?? 'unknown'
+            }`
         );
+
         console.error(
-            `Available reviews: ${Math.min(
-                totalReviews ?? finalReviews.length,
-                MAX_AVAILABLE_REVIEWS
-            )}`
+            `Available reviews: ${targetReviews}`
         );
+
+        console.error(
+            `Collection complete: ${
+                collectionComplete
+            }`
+        );
+
         console.error(
             `Last page:         ${lastPage}`
         );
+
+        console.error(
+            `Total pages:       ${
+                totalPages ?? 'unknown'
+            }`
+        );
+
+        console.error(
+            `Reviews remained:  ${
+                reviewsRemained ?? 'unknown'
+            }`
+        );
+
         console.error(
             `Output file:       ${outputFile}`
         );
-        console.error('============================');
+
+        console.error(
+            '============================'
+        );
     } catch (error) {
         console.error(
             'ERROR:',

@@ -9,9 +9,6 @@ use Illuminate\Http\Request;
 
 class OrganizationController extends Controller
 {
-    /**
-     * Получить сохранённую организацию.
-     */
     public function show(): JsonResponse
     {
         $organization = Organization::first();
@@ -27,31 +24,88 @@ class OrganizationController extends Controller
         ]);
     }
 
-    /**
-     * Сохранить URL организации и запустить парсинг.
-     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'yandex_url' => [
                 'required',
                 'url',
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    $host = strtolower(
+                        (string) parse_url($value, PHP_URL_HOST)
+                    );
+
+                    $path = (string) parse_url(
+                        $value,
+                        PHP_URL_PATH
+                    );
+
+                    $query = parse_url($value, PHP_URL_QUERY) ?? '';
+
+                    $allowedHosts = [
+                        'yandex.ru',
+                        'www.yandex.ru',
+                        'yandex.com',
+                        'www.yandex.com',
+                    ];
+
+                    if (!in_array($host, $allowedHosts, true)) {
+                        $fail('Ссылка должна вести на Яндекс Карты.');
+
+                        return;
+                    }
+
+                    if (!str_starts_with($path, '/maps')) {
+                        $fail('Ссылка должна вести на Яндекс Карты.');
+
+                        return;
+                    }
+
+                    parse_str($query, $queryParams);
+
+                    if (($queryParams['tab'] ?? null) !== 'reviews') {
+                        $fail(
+                            'Ссылка должна вести на вкладку «Отзывы» в Яндекс Картах.'
+                        );
+                    }
+                },
             ],
         ]);
 
         $organization = Organization::first();
 
-        if (!$organization) {
+        if ($organization?->parse_status === 'running') {
+            return response()->json([
+                'message' => 'Parsing is already running.',
+                'organization' => $organization,
+            ], 409);
+        }
+
+       if (!$organization) {
             $organization = Organization::create([
                 'yandex_url' => $validated['yandex_url'],
+                'parse_status' => 'running',
+                'parse_progress' => 0,
+                'parse_error' => null,
             ]);
         } else {
+            $urlChanged = $organization->yandex_url !== $validated['yandex_url'];
+
+            if ($urlChanged) {
+                $organization->reviews()->delete();
+            }
+
             $organization->update([
                 'yandex_url' => $validated['yandex_url'],
+                'parse_status' => 'running',
+                'parse_progress' => 0,
+                'parse_error' => null,
             ]);
         }
 
-        ParseOrganizationReviewsJob::dispatch($organization);
+        ParseOrganizationReviewsJob::dispatch(
+            $organization->fresh()
+        );
 
         return response()->json([
             'message' => 'Organization saved. Parsing started.',
@@ -59,9 +113,6 @@ class OrganizationController extends Controller
         ], 202);
     }
 
-    /**
-     * Получить отзывы с пагинацией.
-     */
     public function reviews(Request $request): JsonResponse
     {
         $organization = Organization::first();
@@ -80,9 +131,6 @@ class OrganizationController extends Controller
         return response()->json($reviews);
     }
 
-    /**
-     * Повторно запустить парсинг отзывов.
-     */
     public function refresh(): JsonResponse
     {
         $organization = Organization::first();
@@ -93,10 +141,26 @@ class OrganizationController extends Controller
             ], 404);
         }
 
-        ParseOrganizationReviewsJob::dispatch($organization);
+        if ($organization->parse_status === 'running') {
+            return response()->json([
+                'message' => 'Parsing is already running.',
+                'organization' => $organization,
+            ], 409);
+        }
+
+        $organization->update([
+            'parse_status' => 'running',
+            'parse_progress' => 0,
+            'parse_error' => null,
+        ]);
+
+        ParseOrganizationReviewsJob::dispatch(
+            $organization->fresh()
+        );
 
         return response()->json([
             'message' => 'Parsing started.',
+            'organization' => $organization->fresh(),
         ], 202);
     }
 }
