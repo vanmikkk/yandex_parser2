@@ -28,48 +28,64 @@ class OrganizationController extends Controller
     {
         $validated = $request->validate([
             'yandex_url' => [
-                'required',
-                'url',
-                function (string $attribute, mixed $value, \Closure $fail) {
-                    $host = strtolower(
-                        (string) parse_url($value, PHP_URL_HOST)
+            'required',
+            'url',
+            function (string $attribute, mixed $value, \Closure $fail) {
+                $host = strtolower(
+                    (string) parse_url($value, PHP_URL_HOST)
+                );
+
+                $path = (string) parse_url(
+                    $value,
+                    PHP_URL_PATH
+                );
+
+                $query = (string) parse_url(
+                    $value,
+                    PHP_URL_QUERY
+                );
+
+                $allowedHosts = [
+                    'yandex.ru',
+                    'www.yandex.ru',
+                    'yandex.com',
+                    'www.yandex.com',
+                ];
+
+                if (!in_array($host, $allowedHosts, true)) {
+                    $fail(
+                        'Ссылка должна вести на Яндекс Карты.'
                     );
 
-                    $path = (string) parse_url(
-                        $value,
-                        PHP_URL_PATH
+                    return;
+                }
+
+                if (!str_starts_with($path, '/maps')) {
+                    $fail(
+                        'Ссылка должна вести на Яндекс Карты.'
                     );
 
-                    $query = parse_url($value, PHP_URL_QUERY) ?? '';
+                    return;
+                }
 
-                    $allowedHosts = [
-                        'yandex.ru',
-                        'www.yandex.ru',
-                        'yandex.com',
-                        'www.yandex.com',
-                    ];
+                parse_str($query, $queryParams);
 
-                    if (!in_array($host, $allowedHosts, true)) {
-                        $fail('Ссылка должна вести на Яндекс Карты.');
+                $hasReviewsTab =
+                    ($queryParams['tab'] ?? null) === 'reviews';
 
-                        return;
-                    }
+                $hasReviewsPath =
+                    (bool) preg_match(
+                        '#/reviews(?:/|$)#',
+                        $path
+                    );
 
-                    if (!str_starts_with($path, '/maps')) {
-                        $fail('Ссылка должна вести на Яндекс Карты.');
-
-                        return;
-                    }
-
-                    parse_str($query, $queryParams);
-
-                    if (($queryParams['tab'] ?? null) !== 'reviews') {
-                        $fail(
-                            'Ссылка должна вести на вкладку «Отзывы» в Яндекс Картах.'
-                        );
-                    }
-                },
-            ],
+                if (!$hasReviewsTab && !$hasReviewsPath) {
+                    $fail(
+                        'Ссылка должна вести на раздел «Отзывы» в Яндекс Картах.'
+                    );
+                }
+            },
+        ],
         ]);
 
         $organization = Organization::first();

@@ -34,6 +34,7 @@ if (!url || !outputFile) {
 (async () => {
     const browser = await puppeteer.launch({
         headless: false,
+        // поемнять на true
 
         defaultViewport: {
             width: 1280,
@@ -308,19 +309,30 @@ if (!url || !outputFile) {
 
         const reviewsPageReady =
             await page.evaluate(() => {
-                return Boolean(
-                    document.querySelector(
-                        '.business-reviews-card-view__review'
-                    ) ||
+                const reviewCards = document.querySelectorAll(
+                    '.business-reviews-card-view__review'
+                );
+
+                const reviewsTitle =
                     document.querySelector(
                         '.business-reviews-card-view__title'
-                    )
+                    );
+
+                const reviewsContainer =
+                    document.querySelector(
+                        '.business-reviews-card-view__reviews-container'
+                    );
+
+                return (
+                    reviewCards.length > 0 ||
+                    Boolean(reviewsTitle && reviewsContainer)
                 );
             });
 
         if (!reviewsPageReady) {
             throw new Error(
-                'Страница отзывов Яндекс Карт не открыта или блок отзывов не найден.'
+                'Не удалось обнаружить блок отзывов Яндекс Карт. ' +
+                'Возможно, изменилась структура страницы или открыта не вкладка «Отзывы».'
             );
         }
 
@@ -421,6 +433,17 @@ if (!url || !outputFile) {
 
         const initialDomReviews =
             await collectInitialDomReviews();
+
+        if (
+            initialDomReviews.length === 0 &&
+            !apiReviewsReceived
+        ) {
+            throw new Error(
+                'Яндекс не вернул отзывы: блок отзывов найден, ' +
+                'но карточки отзывов и API-ответ отсутствуют. ' +
+                'Возможно, изменилась структура страницы.'
+            );
+        }
 
         console.error(
             'First DOM review:',
