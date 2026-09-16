@@ -320,25 +320,6 @@ if (!url || !outputFile) {
             'Page loaded.'
         );
 
-        // DEBUG: save the actual page received in headless mode.
-        await page.screenshot({
-            path: './storage/app/yandex/headless-debug.png',
-            fullPage: false,
-        });
-
-        const debugHtml = await page.content();
-
-        fs.writeFileSync(
-            './storage/app/yandex/headless-debug.html',
-            debugHtml,
-            'utf8'
-        );
-
-        console.error(
-            'Headless debug files saved.'
-        );
-
-
         await new Promise(
             resolve => setTimeout(resolve, 5000)
         );
